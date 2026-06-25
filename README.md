@@ -219,6 +219,28 @@ python3 npc_dialogue.py
 
 The first normal knowledge query may download the local embedding model. Chroma vector data is persisted to `chroma_db/`, so later runs can reuse the local index.
 
+**5. Run the local web dialogue demo**
+
+```bash
+/Applications/anaconda3/bin/python3.13 web_app.py
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8000
+```
+
+The web demo starts in `Mock` mode, which does not require `ANTHROPIC_API_KEY`. Mock mode uses the existing NPC config, intent router, and memory logging, but the response text is deterministic local fallback text rather than Claude output.
+
+Switch to `Live` mode only after configuring:
+
+```bash
+export ANTHROPIC_API_KEY="your_api_key_here"
+```
+
+If the API key is missing, the web demo falls back to mock mode and shows the fallback reason in the status panel.
+
 **Available commands during dialogue**
 
 | Command | Action |
