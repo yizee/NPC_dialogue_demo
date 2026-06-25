@@ -112,3 +112,42 @@ def test_live_mode_without_api_key_returns_mock_fallback(tmp_path, monkeypatch):
     assert response["metadata"]["mode"] == "mock"
     assert response["metadata"]["requested_mode"] == "live"
     assert response["metadata"]["fallback"] == "ANTHROPIC_API_KEY is not configured"
+
+
+def test_live_mode_with_api_key_uses_live_persona_chat(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    calls = []
+
+    def fake_create_claude_message(self, *, system_prompt, messages, max_tokens=300):
+        calls.append({
+            "system_prompt": system_prompt,
+            "messages": messages,
+            "max_tokens": max_tokens,
+        })
+        return "真实 NPC 回复"
+
+    monkeypatch.setattr(
+        DialogueWebService,
+        "_create_claude_message",
+        fake_create_claude_message,
+        raising=False,
+    )
+    service = DialogueWebService(log_dir=tmp_path)
+    session = service.create_session("blacksmith", "demo_player", "live")
+
+    response = service.chat(
+        session_id=session["session_id"],
+        npc_id="blacksmith",
+        player_id="demo_player",
+        message="你好",
+        mode="live",
+    )
+
+    assert response["reply"] == "真实 NPC 回复"
+    assert calls
+    assert calls[0]["messages"][-1] == {"role": "user", "content": "你好"}
+    assert response["metadata"]["mode"] == "live"
+    assert response["metadata"]["requested_mode"] == "live"
+    assert response["metadata"]["fallback"] is None
+    assert response["metadata"]["intent"] == "persona_chat"
+    assert response["metadata"]["memory_recorded"] is True
