@@ -9,6 +9,8 @@ def build_system_prompt(
     npc: dict,
     player_context: dict,
     retrieved_context: str = "",
+    memory_summary: str = "",
+    quest_state: dict | None = None,
 ) -> str:
     knowledge_section = ""
     if retrieved_context:
@@ -22,6 +24,22 @@ def build_system_prompt(
 2. 只使用与玩家问题直接相关的内容
 3. 如果这些内容无法回答问题，要符合角色身份地表达不知道，不得编造细节
 4. 保持自然口吻，把这些事实融入角色回答中
+"""
+
+    memory_section = ""
+    if memory_summary:
+        memory_section = f"""
+
+== 对话记忆 ==
+{memory_summary}
+"""
+
+    quest_state_section = ""
+    if quest_state:
+        quest_state_section = f"""
+
+== 任务状态 ==
+{quest_state}
 """
 
     return f"""你是一个角色扮演游戏中的 NPC，必须严格保持角色身份。
@@ -40,6 +58,8 @@ def build_system_prompt(
 玩家等级：{player_context['level']}
 当前状态：{player_context['quest_status']}
 声望：{player_context['reputation']}
+{memory_section}
+{quest_state_section}
 {knowledge_section}
 
 == 对话规则 ==
@@ -129,4 +149,54 @@ def build_gm_prompt(npc: dict, player_context: dict, conversation_history: list)
 4. GM 建议：针对该玩家的偏好，下一步可以如何优化 NPC 对话或任务设计
 
 输出格式为纯文本，不使用 Markdown 标题，总长度控制在 150-200 字。
+"""
+
+
+def build_compact_prompt(npc: dict, player_context: dict, compact_input: dict) -> str:
+    """
+    Compact prompt contract.
+    Python decides when to compact; this prompt defines what a summary must keep.
+    """
+    recent_history = "\n".join([
+        f"{'玩家' if m['role'] == 'user' else npc['name']}: {m['content']}"
+        for m in compact_input.get("recent_conversation_history", [])
+    ]) or "（无近期对话）"
+
+    return f"""你是一个 NPC 对话记忆整理器。你的任务是把长对话压缩成结构化记忆，供后续 NPC 对话使用。
+
+== NPC 信息 ==
+姓名：{npc['name']}
+身份：{npc['title']}
+擅长话题：{', '.join(npc['topics'])}
+
+== 玩家信息 ==
+玩家名称：{player_context['name']}
+玩家等级：{player_context['level']}
+当前状态：{player_context['quest_status']}
+声望：{player_context['reputation']}
+
+== 已有摘要 ==
+{compact_input.get('session_summary') or '（暂无摘要）'}
+
+== 近期对话 ==
+{recent_history}
+
+== 已记录剧情事件 ==
+{compact_input.get('story_events', [])}
+
+== 当前任务状态 ==
+{compact_input.get('quest_state', {})}
+
+请只输出 JSON 对象，字段必须包含：
+- session_summary
+- important_facts
+- quest_progress
+- player_commitments
+- npc_attitude
+- story_events
+- open_threads
+
+保留任务进度、NPC 态度、玩家承诺、重要线索和可能影响后续剧情的世界状态。
+删除重复寒暄、无意义闲聊、重复表达和不影响任务或剧情的细节。
+不要判断任务完成，不要解锁结局，不要把猜测写成事实。
 """

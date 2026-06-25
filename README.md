@@ -14,13 +14,15 @@ The system combines six functional modules:
 
 **Quest Generator (方案 B)** - A `/quest` command triggers in-character quest generation that references the current conversation history, producing narrative-coherent tasks with item lore and rewards that match each NPC's identity.
 
-**GM Feedback Tool (方案 C)** - After each session, a GM-perspective summary is automatically generated, analyzing player engagement, quest intent, narrative immersion, and providing design suggestions for NPC optimization.
+**GM Feedback NPC (方案 C)** - A dedicated `gm_advisor` NPC can analyze player feedback, task clarity, quest intent, and narrative immersion when the player explicitly asks for a review, instead of generating a report after every normal conversation.
 
 **Local RAG Knowledge System** - Lore and world-setting questions can retrieve relevant Markdown lore from a local knowledge base using LangChain, multilingual embeddings, and Chroma similarity search. Retrieved context is injected into the NPC prompt so answers can reference consistent world, item, monster, quest, and shop facts.
 
 **Intent Router + Workflow Orchestration** - A deterministic router classifies player input before model calls, sending casual chat, lore questions, quest requests, inventory questions, and GM feedback into separate workflows.
 
 **Local Tool/API Layer** - Inventory and player-profile queries are handled through local Python functions that simulate real backend API calls.
+
+**Claude Tool Calling Layer** - Tool-worthy player requests can be sent to Claude with Anthropic tool schemas. Claude can request a tool, the local executor runs the matching Python API, and the result is returned to Claude for the final NPC response.
 
 ---
 
@@ -75,6 +77,43 @@ The router is rule-based in this phase, so it is deterministic, testable, and do
 
 ---
 
+## Claude Tool Calling
+
+```text
+Player tool-worthy input
+  -> Claude request with CLAUDE_TOOLS
+  -> Claude returns tool_use
+  -> tool_executor.execute_tool_call()
+  -> user message with tool_result
+  -> Claude final NPC response
+```
+
+`claude_tools.py` defines Anthropic-compatible tool schemas. `tool_executor.py` maps Claude `tool_use` requests to local Python functions in `game_tools.py`, filters extra model-provided arguments, returns structured errors for invalid calls, and marks failed `tool_result` blocks with `is_error`. If Claude tool calling fails during a CLI run, the inventory workflow falls back to the deterministic local tool response so the demo remains usable.
+
+When tool calling succeeds, the session log records the actual tool names Claude requested. This makes the API integration auditable instead of treating every tool-worthy turn as a generic inventory check.
+
+Offline tests validate schemas and execution without calling Claude. Manual tool-calling tests require `ANTHROPIC_API_KEY`.
+
+---
+
+## Memory and Compact Layer
+
+The project keeps full raw conversation logs while passing only recent and compressed context into live Claude calls.
+
+```text
+each valid turn
+  -> append raw JSONL log under logs/sessions/
+  -> update recent_conversation_history
+  -> update story_events / quest_state when applicable
+  -> compact trigger point checks whether summary refresh is needed
+```
+
+Compact is not deletion. Raw logs remain available for audit, debugging, replay, GM feedback, and future final-story generation. Compact summaries are used only to keep live NPC dialogue focused and token-efficient.
+
+Quest state is stored separately from compact text. A summary may say that the player promised to find a Dragon Hunter weapon, but quest completion must still be validated by explicit game state or tool/API logic.
+
+---
+
 ## Demo
 
 ```text
@@ -94,11 +133,22 @@ The router is rule-based in this phase, so it is deterministic, testable, and do
 艾尔文: 三日前，北边的霜牙沼泽有什么东西落下去了……
         那里沉着一块「碎星髓」，把它带回来，我便将书页里的一个秘密送予你。
 
-[GM 反馈报告]
-对话参与度：玩家主动探索了物品 lore 和任务线索，互动积极。
-任务意向：玩家通过 /quest 明确表达了接取任务的意愿。
-角色沉浸感：输入符合奇幻世界观，无出戏行为。
-GM 建议：可围绕碎星髓的记忆残响设计后续任务链。
+你: quit
+
+艾尔文: 路，总是在脚下的。但方向……需要你自己去发现。
+```
+
+GM review is handled by a dedicated feedback NPC:
+
+```text
+选择 NPC: gm_advisor
+
+你遇到了：赛琳 - 冒险者档案官
+赛琳: 我是赛琳，冒险者档案官。如果你想复盘一次对话、反馈任务问题，或者整理冒险记录，可以直接告诉我。
+
+你: 我要反馈这个任务目标不够清楚
+
+[GM 正在分析你的反馈…]
 ```
 
 ---
@@ -109,6 +159,9 @@ GM 建议：可围绕碎星髓的记忆残响设计后续任务链。
 ├── npc_dialogue.py          # Main program: conversation loop, router, RAG, quest and GM triggers
 ├── intent_router.py         # Rule-based workflow classifier
 ├── game_tools.py            # Local player profile and inventory tool/API functions
+├── claude_tools.py          # Anthropic tool schemas
+├── tool_executor.py         # Executes Claude tool_use blocks locally
+├── memory_store.py          # Persistent raw logs, recent history, compact triggers, story and quest state
 ├── prompts.py               # Prompt builders for persona chat, quest generation, and GM feedback
 ├── rag_pipeline.py          # LangChain + Chroma RAG loading, indexing, retrieval, and logging
 ├── npc_config.json          # NPC character definitions
@@ -129,7 +182,8 @@ Generated local runtime data:
 
 ```text
 ├── chroma_db/               # Local Chroma vector store, created on first indexing
-└── logs/rag_retrieval.jsonl # Retrieval audit log
+├── logs/rag_retrieval.jsonl # Retrieval audit log
+└── logs/sessions/*.jsonl    # Full raw dialogue session logs
 ```
 
 ---
@@ -171,7 +225,7 @@ The first normal knowledge query may download the local embedding model. Chroma 
 |--------|--------|
 | `[text]` | Talk to the NPC |
 | `/quest` | Request a quest from the NPC |
-| `quit` | End session and generate GM feedback report |
+| `quit` | End the current NPC conversation |
 
 ---
 
@@ -230,11 +284,21 @@ Router: inventory_query
 Router: gm_feedback
 ```
 
+For full GM-style review, choose `gm_advisor` and describe the issue or session you want reviewed. Normal NPC conversations no longer generate a feedback report automatically on `quit`.
+
 Inventory queries are answered by the local tool layer, for example:
 
 ```text
 [工具调用: check_inventory] 你有月盐药剂。
 ```
+
+Manual Claude tool-calling check:
+
+```text
+你: 我背包里有月盐药剂吗？
+```
+
+Expected behavior: Claude uses `check_inventory`, the local executor returns the inventory result, and the final NPC response reflects that result. If the API call fails, the CLI prints a warning and falls back to the deterministic local inventory response.
 
 ---
 

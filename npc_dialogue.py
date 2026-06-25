@@ -9,6 +9,7 @@ import re
 
 from anthropic import Anthropic
 
+from claude_tools import CLAUDE_TOOLS
 from game_tools import (
     check_inventory,
     format_inventory_response,
@@ -21,8 +22,10 @@ from intent_router import (
     QUEST_REQUEST,
     classify_intent,
 )
+from memory_store import DialogueMemorySession
 from prompts import build_gm_prompt, build_quest_prompt, build_system_prompt
 from rag_pipeline import RagService
+from tool_executor import execute_tool_call, tool_result_block
 
 client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
@@ -35,6 +38,11 @@ def load_npc_config(npc_id: str) -> dict:
     return configs[npc_id]
 
 
+def load_all_npc_configs() -> dict:
+    with open("npc_config.json", "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
 def safety_check(player_input: str) -> bool:
     forbidden_keywords = ["hack", "exploit", "bypass", "ignore your instructions"]
     return not any(kw in player_input.lower() for kw in forbidden_keywords)
@@ -42,6 +50,54 @@ def safety_check(player_input: str) -> bool:
 
 def should_use_rag_for_intent(intent: str) -> bool:
     return intent == LORE_QUESTION
+
+
+def should_use_claude_tools(intent: str) -> bool:
+    return intent == INVENTORY_QUERY
+
+
+def is_gm_advisor(npc_id: str) -> bool:
+    return npc_id == "gm_advisor"
+
+
+def record_memory_turn(
+    memory_session: DialogueMemorySession,
+    user_input: str,
+    assistant_reply: str,
+    intent: str,
+    used_rag: bool = False,
+    used_tool_calling: bool = False,
+    rag_sources: list[str] | None = None,
+    tool_names: list[str] | None = None,
+) -> None:
+    try:
+        memory_session.append_turn(
+            user_input=user_input,
+            assistant_reply=assistant_reply,
+            intent=intent,
+            used_rag=used_rag,
+            used_tool_calling=used_tool_calling,
+            rag_sources=rag_sources or [],
+            tool_names=tool_names or [],
+        )
+    except Exception as exc:
+        print(f"[Memory 警告] 对话日志保存失败，将继续本轮对话：{exc}\n")
+
+
+def get_live_conversation_history(memory_session: DialogueMemorySession) -> list[dict]:
+    return list(memory_session.recent_conversation_history)
+
+
+def compact_memory_if_needed(
+    memory_session: DialogueMemorySession,
+    force: bool = False,
+) -> None:
+    if not memory_session.should_compact(force=force):
+        return
+    # Phase 4 MVP defines the compact contract and trigger point.
+    # Claude-based compact generation can be added after storage is stable.
+    memory_session.trim_recent_history()
+    memory_session.mark_compacted()
 
 
 def extract_inventory_item_name(player_input: str) -> str:
@@ -87,6 +143,20 @@ def generate_gm_feedback(npc: dict, player_context: dict, conversation_history: 
     return response.content[0].text
 
 
+def generate_gm_feedback_safely(
+    npc: dict,
+    player_context: dict,
+    conversation_history: list,
+) -> str:
+    try:
+        return generate_gm_feedback(npc, player_context, conversation_history)
+    except Exception as exc:
+        return (
+            "[GM Workflow] 完整对话记录已保存。"
+            f"自动 GM 反馈生成失败：{exc}"
+        )
+
+
 def generate_quest(npc: dict, player_context: dict, conversation_history: list) -> str:
     """
     触发任务生成
@@ -106,9 +176,89 @@ def generate_quest(npc: dict, player_context: dict, conversation_history: list) 
     return response.content[0].text
 
 
+def execute_tool_uses(tool_uses: list) -> dict:
+    tool_results = []
+    tool_names = []
+    for tool_use in tool_uses:
+        tool_name = tool_use.name
+        execution = execute_tool_call({
+            "name": tool_name,
+            "input": tool_use.input,
+        })
+        tool_names.append(tool_name)
+        tool_results.append(tool_result_block(tool_use.id, execution))
+    return {
+        "tool_results": tool_results,
+        "tool_names": tool_names,
+    }
+
+
+def build_tool_system_prompt(npc: dict, player_context: dict) -> str:
+    system_prompt = build_system_prompt(npc, player_context)
+    return f"""{system_prompt}
+
+== 工具调用规则 ==
+当前玩家 ID：{player_context.get('player_id', 'player_001')}
+当玩家询问背包、物品、下一步行动、任务元数据或任务完成条件时，优先使用可用工具。
+工具结果是游戏后端状态，必须优先于猜测。不要向玩家暴露 Python 错误或内部实现。
+"""
+
+
+def run_claude_tool_turn_with_metadata(
+    npc: dict,
+    player_context: dict,
+    player_input: str,
+) -> dict:
+    system_prompt = build_tool_system_prompt(npc, player_context)
+    messages = [{"role": "user", "content": player_input}]
+    first_response = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=300,
+        system=system_prompt,
+        messages=messages,
+        tools=CLAUDE_TOOLS,
+    )
+
+    tool_uses = [
+        block for block in first_response.content
+        if getattr(block, "type", None) == "tool_use"
+    ]
+    if not tool_uses:
+        return {
+            "reply": first_response.content[0].text,
+            "tool_names": [],
+        }
+
+    executed = execute_tool_uses(tool_uses)
+
+    follow_up = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=300,
+        system=system_prompt,
+        messages=[
+            messages[0],
+            {"role": "assistant", "content": first_response.content},
+            {"role": "user", "content": executed["tool_results"]},
+        ],
+    )
+    return {
+        "reply": follow_up.content[0].text,
+        "tool_names": executed["tool_names"],
+    }
+
+
+def run_claude_tool_turn(npc: dict, player_context: dict, player_input: str) -> str:
+    return run_claude_tool_turn_with_metadata(
+        npc,
+        player_context,
+        player_input,
+    )["reply"]
+
+
 def chat_with_npc(npc_id: str, player_context: dict):
     npc = load_npc_config(npc_id)
-    conversation_history = []
+    player_id = player_context.get("player_id", "player_001")
+    memory_session = DialogueMemorySession(npc_id=npc_id, player_id=player_id)
     rag_service = None
     rag_disabled = False
 
@@ -136,10 +286,7 @@ def chat_with_npc(npc_id: str, player_context: dict):
 
         if player_input.lower() == "quit":
             print(f"\n{npc['name']}: {npc['farewell']}")
-            if conversation_history:
-                print("\n[GM 正在生成反馈报告…]\n")
-                feedback = generate_gm_feedback(npc, player_context, conversation_history)
-                print(f"{'='*50}\n[GM 反馈报告]\n{feedback}\n{'='*50}\n")
+            compact_memory_if_needed(memory_session, force=True)
             break
 
         if not player_input:
@@ -152,12 +299,20 @@ def chat_with_npc(npc_id: str, player_context: dict):
         # /quest 指令：触发任务生成
         if player_input.lower() == "/quest":
             print(f"\n{npc['name']} 沉吟片刻……\n")
-            quest_text = generate_quest(npc, player_context, conversation_history)
+            quest_text = generate_quest(
+                npc,
+                player_context,
+                get_live_conversation_history(memory_session),
+            )
             print(f"{npc['name']}: {quest_text}\n")
 
-            # 把任务对话也加入历史，保持上下文连贯
-            conversation_history.append({"role": "user", "content": "（玩家请求一个任务）"})
-            conversation_history.append({"role": "assistant", "content": quest_text})
+            record_memory_turn(
+                memory_session=memory_session,
+                user_input="（玩家请求一个任务）",
+                assistant_reply=quest_text,
+                intent=QUEST_REQUEST,
+            )
+            compact_memory_if_needed(memory_session)
             continue
 
         route = classify_intent(player_input)
@@ -165,31 +320,73 @@ def chat_with_npc(npc_id: str, player_context: dict):
 
         if route.intent == QUEST_REQUEST:
             print(f"\n{npc['name']} 沉吟片刻……\n")
-            quest_text = generate_quest(npc, player_context, conversation_history)
+            quest_text = generate_quest(
+                npc,
+                player_context,
+                get_live_conversation_history(memory_session),
+            )
             print(f"{npc['name']}: {quest_text}\n")
-            conversation_history.append({"role": "user", "content": player_input})
-            conversation_history.append({"role": "assistant", "content": quest_text})
+            record_memory_turn(
+                memory_session=memory_session,
+                user_input=player_input,
+                assistant_reply=quest_text,
+                intent=route.intent,
+            )
+            compact_memory_if_needed(memory_session)
             continue
 
-        if route.intent == INVENTORY_QUERY:
-            item_name = extract_inventory_item_name(player_input)
-            inventory_result = check_inventory(player_context, item_name)
-            tool_response = format_inventory_response(inventory_result)
-            print(f"\n{tool_response}\n")
-            conversation_history.append({"role": "user", "content": player_input})
-            conversation_history.append({"role": "assistant", "content": tool_response})
+        if should_use_claude_tools(route.intent):
+            tool_names = []
+            try:
+                tool_turn = run_claude_tool_turn_with_metadata(
+                    npc,
+                    player_context,
+                    player_input,
+                )
+                tool_response = tool_turn["reply"]
+                tool_names = tool_turn["tool_names"]
+            except Exception as exc:
+                item_name = extract_inventory_item_name(player_input)
+                inventory_result = check_inventory(player_context, item_name)
+                tool_response = format_inventory_response(inventory_result)
+                tool_names = ["check_inventory"]
+                print(f"[Tool Calling 警告] Claude 工具调用失败，已使用本地工具兜底：{exc}\n")
+            print(f"\n{npc['name']}: {tool_response}\n")
+            record_memory_turn(
+                memory_session=memory_session,
+                user_input=player_input,
+                assistant_reply=tool_response,
+                intent=route.intent,
+                used_tool_calling=True,
+                tool_names=tool_names,
+            )
+            compact_memory_if_needed(memory_session)
             continue
 
         if route.intent == GM_FEEDBACK:
-            feedback_response = (
-                "[GM Workflow] 已记录你的反馈。"
-                "如果这是任务或剧情问题，GM 会优先检查任务目标、奖励和触发条件是否清晰。"
-            )
-            if conversation_history:
-                feedback_response += " 你也可以输入 quit 结束本轮对话并生成完整 GM 反馈报告。"
+            if is_gm_advisor(npc_id):
+                print("\n[GM 正在分析你的反馈…]\n")
+                feedback_history = memory_session.full_conversation_history + [
+                    {"role": "user", "content": player_input}
+                ]
+                feedback_response = generate_gm_feedback_safely(
+                    npc,
+                    player_context,
+                    feedback_history,
+                )
+            else:
+                feedback_response = (
+                    "[GM Workflow] 已记录你的反馈。"
+                    "如果你想做完整复盘，可以退出后选择 gm_advisor 找档案官赛琳。"
+                )
             print(f"\n{feedback_response}\n")
-            conversation_history.append({"role": "user", "content": player_input})
-            conversation_history.append({"role": "assistant", "content": feedback_response})
+            record_memory_turn(
+                memory_session=memory_session,
+                user_input=player_input,
+                assistant_reply=feedback_response,
+                intent=route.intent,
+            )
+            compact_memory_if_needed(memory_session)
             continue
 
         # 普通对话
@@ -207,18 +404,28 @@ def chat_with_npc(npc_id: str, player_context: dict):
             npc,
             player_context,
             retrieved_context=retrieved_context,
+            memory_summary=memory_session.session_summary,
+            quest_state=memory_session.quest_state,
         )
-        conversation_history.append({"role": "user", "content": player_input})
+        live_history = get_live_conversation_history(memory_session)
+        live_history.append({"role": "user", "content": player_input})
 
         response = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=300,
             system=system_prompt,
-            messages=conversation_history
+            messages=live_history
         )
 
         npc_reply = response.content[0].text
-        conversation_history.append({"role": "assistant", "content": npc_reply})
+        record_memory_turn(
+            memory_session=memory_session,
+            user_input=player_input,
+            assistant_reply=npc_reply,
+            intent=route.intent,
+            used_rag=bool(retrieved_context),
+        )
+        compact_memory_if_needed(memory_session)
 
         print(f"\n{npc['name']}: {npc_reply}\n")
 
@@ -232,7 +439,8 @@ def main():
     player_context["reputation"] = "中立"
 
     print("=== NPC 对话 + 任务生成原型 ===")
-    print("可用 NPC: blacksmith / innkeeper / mysterious_wizard")
+    available_npcs = " / ".join(load_all_npc_configs())
+    print(f"可用 NPC: {available_npcs}")
     npc_choice = input("选择 NPC: ").strip() or "blacksmith"
 
     chat_with_npc(npc_choice, player_context)

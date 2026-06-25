@@ -1,8 +1,10 @@
 from game_tools import (
     check_inventory,
     format_inventory_response,
+    generate_quest_metadata,
     get_player_profile,
     recommend_next_action,
+    validate_quest_completion,
 )
 
 
@@ -66,3 +68,24 @@ def test_recommend_next_action_for_unselected_class():
     recommendation = recommend_next_action(profile)
 
     assert "选择一个主要职业" in recommendation
+
+
+def test_generate_quest_metadata_returns_level_aware_payload():
+    result = generate_quest_metadata("blacksmith", 5)
+
+    assert result["npc_id"] == "blacksmith"
+    assert result["player_level"] == 5
+    assert result["recommended_type"]
+    assert result["difficulty"] in {"low", "medium", "high"}
+
+
+def test_validate_quest_completion_requires_known_evidence():
+    incomplete = validate_quest_completion("player_001", "dragon_hunter_weapon")
+    complete = validate_quest_completion(
+        "player_001",
+        "dragon_hunter_weapon",
+        evidence=["裂鳞长枪"],
+    )
+
+    assert incomplete["completed"] is False
+    assert complete["completed"] is True

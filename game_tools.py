@@ -15,6 +15,12 @@ ITEM_ALIASES = {
     "moon salt potion": "月盐药剂",
 }
 
+QUEST_REQUIREMENTS = {
+    "dragon_hunter_weapon": ["裂鳞长枪"],
+    "moon_salt_potion": ["月盐药剂"],
+    "star_marrow_sample": ["碎星髓"],
+}
+
 
 def get_player_profile(player_id: str) -> dict:
     profile = dict(DEFAULT_PLAYER_PROFILE)
@@ -57,3 +63,42 @@ def recommend_next_action(player_state: dict) -> str:
         return "建议先完成外围调查或采集任务提升等级。"
 
     return "建议调查魔龙猎人遗物，为挑战灰烬魔龙做准备。"
+
+
+def generate_quest_metadata(npc_id: str, player_level: int) -> dict:
+    quest_type_by_npc = {
+        "blacksmith": "收集魔龙猎人武器",
+        "innkeeper": "调查失踪旅客情报",
+        "mysterious_wizard": "收集安全碎星髓样本",
+    }
+    difficulty = "low"
+    if player_level >= 8:
+        difficulty = "high"
+    elif player_level >= 5:
+        difficulty = "medium"
+
+    return {
+        "npc_id": npc_id,
+        "player_level": player_level,
+        "recommended_type": quest_type_by_npc.get(npc_id, "外围调查"),
+        "difficulty": difficulty,
+    }
+
+
+def validate_quest_completion(
+    player_id: str,
+    quest_id: str,
+    evidence: list[str] | None = None,
+) -> dict:
+    required_evidence = QUEST_REQUIREMENTS.get(quest_id, [])
+    provided_evidence = evidence or []
+    completed = bool(required_evidence) and all(
+        required in provided_evidence for required in required_evidence
+    )
+    return {
+        "player_id": player_id,
+        "quest_id": quest_id,
+        "completed": completed,
+        "required_evidence": list(required_evidence),
+        "provided_evidence": list(provided_evidence),
+    }
