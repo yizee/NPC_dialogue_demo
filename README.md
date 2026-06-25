@@ -112,6 +112,8 @@ Compact is not deletion. Raw logs remain available for audit, debugging, replay,
 
 Quest state is stored separately from compact text. A summary may say that the player promised to find a Dragon Hunter weapon, but quest completion must still be validated by explicit game state or tool/API logic.
 
+When a new session starts for the same NPC and player, the system restores recent local dialogue history from JSONL logs so the NPC can carry short-term context across restarts. This is local file-based memory, not a multi-user account database.
+
 ---
 
 ## Demo

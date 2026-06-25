@@ -73,6 +73,44 @@ def test_recent_history_is_trimmed_to_max_messages(tmp_path):
     ]
 
 
+def test_restore_previous_history_loads_recent_turns_for_same_npc_and_player(tmp_path):
+    first_session = DialogueMemorySession(
+        npc_id="blacksmith",
+        player_id="player_001",
+        log_dir=tmp_path,
+    )
+    first_session.append_turn(
+        user_input="我叫林恩，请记住。",
+        assistant_reply="好，我记住了，林恩。",
+        intent="persona_chat",
+    )
+
+    other_npc_session = DialogueMemorySession(
+        npc_id="innkeeper",
+        player_id="player_001",
+        log_dir=tmp_path,
+    )
+    other_npc_session.append_turn(
+        user_input="这条不应该进入铁匠记忆。",
+        assistant_reply="只属于酒馆老板。",
+        intent="persona_chat",
+    )
+
+    restored_session = DialogueMemorySession(
+        npc_id="blacksmith",
+        player_id="player_001",
+        log_dir=tmp_path,
+        restore_previous=True,
+    )
+
+    assert restored_session.recent_conversation_history == [
+        {"role": "user", "content": "我叫林恩，请记住。"},
+        {"role": "assistant", "content": "好，我记住了，林恩。"},
+    ]
+    assert restored_session.full_conversation_history == restored_session.recent_conversation_history
+    assert restored_session.turn_count == 0
+
+
 def test_should_compact_by_recent_message_count(tmp_path):
     session = DialogueMemorySession(
         npc_id="blacksmith",

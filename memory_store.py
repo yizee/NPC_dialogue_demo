@@ -17,7 +17,7 @@ def _safe_id(value: str) -> str:
 
 
 def create_session_id(npc_id: str, player_id: str) -> str:
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
     return f"{timestamp}_{_safe_id(npc_id)}_{_safe_id(player_id)}"
 
 
@@ -29,6 +29,7 @@ class DialogueMemorySession:
     max_recent_messages: int = MAX_RECENT_MESSAGES
     compact_every_n_turns: int = COMPACT_EVERY_N_TURNS
     session_id: str | None = None
+    restore_previous: bool = False
     recent_conversation_history: list[dict] = field(default_factory=list)
     session_summary: str = ""
     full_conversation_history: list[dict] = field(default_factory=list)
@@ -49,6 +50,34 @@ class DialogueMemorySession:
         self.log_dir = Path(self.log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.raw_log_path = self.log_dir / f"{self.session_id}.jsonl"
+        if self.restore_previous:
+            self.restore_previous_history()
+
+    def restore_previous_history(self) -> None:
+        restored_messages = []
+        for log_path in sorted(self.log_dir.glob("*.jsonl")):
+            if log_path == self.raw_log_path:
+                continue
+            for line in log_path.read_text(encoding="utf-8").splitlines():
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if record.get("npc_id") != self.npc_id:
+                    continue
+                if record.get("player_id") != self.player_id:
+                    continue
+                restored_messages.extend([
+                    {"role": "user", "content": record.get("user_input", "")},
+                    {"role": "assistant", "content": record.get("assistant_reply", "")},
+                ])
+        restored_messages = [
+            message
+            for message in restored_messages
+            if message["content"]
+        ]
+        self.full_conversation_history = list(restored_messages)
+        self.recent_conversation_history = restored_messages[-self.max_recent_messages:]
 
     def append_turn(
         self,

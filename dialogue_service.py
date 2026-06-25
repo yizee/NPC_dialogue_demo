@@ -61,6 +61,7 @@ class DialogueWebService:
             npc_id=npc_id,
             player_id=player_id,
             log_dir=self.log_dir,
+            restore_previous=True,
         )
         self.sessions[session.session_id] = session
         return {
@@ -171,6 +172,7 @@ class DialogueWebService:
             player_id=player_id,
             log_dir=self.log_dir,
             session_id=session_id or None,
+            restore_previous=True,
         )
         self.sessions[session.session_id] = session
         return session

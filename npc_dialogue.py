@@ -258,7 +258,11 @@ def run_claude_tool_turn(npc: dict, player_context: dict, player_input: str) -> 
 def chat_with_npc(npc_id: str, player_context: dict):
     npc = load_npc_config(npc_id)
     player_id = player_context.get("player_id", "player_001")
-    memory_session = DialogueMemorySession(npc_id=npc_id, player_id=player_id)
+    memory_session = DialogueMemorySession(
+        npc_id=npc_id,
+        player_id=player_id,
+        restore_previous=True,
+    )
     rag_service = None
     rag_disabled = False
 

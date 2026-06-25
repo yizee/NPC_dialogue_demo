@@ -28,6 +28,28 @@ def test_create_session_returns_npc_and_mock_mode(tmp_path):
     assert response["session_id"] in service.sessions
 
 
+def test_create_session_restores_previous_memory_for_same_npc_and_player(tmp_path):
+    first_service = DialogueWebService(log_dir=tmp_path)
+    first_session = first_service.create_session("blacksmith", "demo_player", "mock")
+    first_service.chat(
+        session_id=first_session["session_id"],
+        npc_id="blacksmith",
+        player_id="demo_player",
+        message="我叫林恩，请记住。",
+        mode="mock",
+    )
+
+    second_service = DialogueWebService(log_dir=tmp_path)
+    second_session = second_service.create_session("blacksmith", "demo_player", "mock")
+    memory_session = second_service.sessions[second_session["session_id"]]
+
+    assert memory_session.recent_conversation_history[0] == {
+        "role": "user",
+        "content": "我叫林恩，请记住。",
+    }
+    assert "林恩" in memory_session.recent_conversation_history[1]["content"]
+
+
 def test_mock_chat_classifies_intent_and_records_memory(tmp_path):
     service = DialogueWebService(log_dir=tmp_path)
     session = service.create_session("blacksmith", "demo_player", "mock")
