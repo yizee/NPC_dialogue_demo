@@ -4,11 +4,79 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>NPC Dialogue Console</title>
+  <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-  <main>
-    <h1>NPC Dialogue Console</h1>
-    <p>Local web demo shell.</p>
+  <main class="app-shell">
+    <aside class="npc-panel">
+      <div class="brand">
+        <span class="brand-mark">NPC</span>
+        <div>
+          <h1>NPC Dialogue Console</h1>
+          <p>Local agent workflow demo</p>
+        </div>
+      </div>
+
+      <div class="control-block">
+        <label for="modeSelect">Mode</label>
+        <select id="modeSelect">
+          <option value="mock">Mock</option>
+          <option value="live">Live</option>
+        </select>
+      </div>
+
+      <div class="control-block">
+        <div class="section-label">Characters</div>
+        <div id="npcList" class="npc-list"></div>
+      </div>
+    </aside>
+
+    <section class="chat-panel">
+      <header class="character-header">
+        <div>
+          <div id="npcName" class="npc-name">Loading...</div>
+          <div id="npcTitle" class="npc-title"></div>
+        </div>
+        <div id="sessionBadge" class="session-badge">No session</div>
+      </header>
+
+      <div id="npcPersona" class="persona"></div>
+      <div id="chatLog" class="chat-log"></div>
+
+      <form id="chatForm" class="chat-form">
+        <input id="messageInput" type="text" autocomplete="off" placeholder="Ask about lore, inventory, quests, or feedback">
+        <button id="sendButton" type="submit">Send</button>
+      </form>
+      <div id="errorBox" class="error-box" hidden></div>
+    </section>
+
+    <aside class="status-panel">
+      <div class="section-label">System State</div>
+      <div class="status-grid">
+        <div class="status-item">
+          <span>Intent</span>
+          <strong id="intentStatus">-</strong>
+        </div>
+        <div class="status-item">
+          <span>RAG</span>
+          <strong id="ragStatus">-</strong>
+        </div>
+        <div class="status-item">
+          <span>Tool</span>
+          <strong id="toolStatus">-</strong>
+        </div>
+        <div class="status-item">
+          <span>Memory</span>
+          <strong id="memoryStatus">-</strong>
+        </div>
+      </div>
+      <div class="fallback-box">
+        <span>Fallback</span>
+        <p id="fallbackStatus">None</p>
+      </div>
+    </aside>
   </main>
+
+  <script src="/static/app.js"></script>
 </body>
 </html>
