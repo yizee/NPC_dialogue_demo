@@ -140,12 +140,14 @@ button:disabled {
   border: 1px solid var(--line);
   border-radius: 6px;
   background: #fbfcfa;
+  color: var(--ink);
   cursor: pointer;
 }
 
 .npc-button.active {
   border-color: var(--accent);
   background: var(--player);
+  color: var(--ink);
 }
 
 .chat-panel {
